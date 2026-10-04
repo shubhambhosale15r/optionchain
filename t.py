@@ -1,14 +1,28 @@
 """
 Call vs Put decay per unit of delta (|theta| / |delta|) on the live Fyers option chain.
 
-Layout: proper option-chain view with LTP included
+Layout:
     CE LTP | CE Theta | CE Δ | CE |θ|/|Δ| | Strike | PE |θ|/|Δ| | PE Δ | PE Theta | PE LTP
-plus a paired strike-by-strike comparison and per-side sums.
+
+Auto-refresh:
+    - align to the next minute boundary (10:00, 10:01, 10:02, ...)  OR
+    - fixed interval in seconds
+Last refreshed time is shown at the top.
 """
+import math
+from datetime import datetime
+
 import numpy as np
 import pandas as pd
 import streamlit as st
 from fyers_apiv3 import fyersModel
+
+# ---- optional autorefresh package
+try:
+    from streamlit_autorefresh import st_autorefresh
+    HAS_AUTOREFRESH = True
+except ImportError:
+    HAS_AUTOREFRESH = False
 
 
 # ---------------------------------------------------------------- Fyers calls
@@ -134,6 +148,34 @@ def style_chain(df, atm, ce_strikes, pe_strikes):
     return df.style.apply(paint, axis=None).format(fmt, na_rep="–")
 
 
+# ---------------------------------------------------------------- auto-refresh
+def ms_until_next_minute():
+    """Milliseconds from now until the next minute boundary (e.g. 10:00 → 10:01)."""
+    now = datetime.now()
+    sec_into_min = now.second + now.microsecond / 1_000_000
+    ms = int(round((60.0 - sec_into_min) * 1000))
+    # guard against a tight loop right at the boundary
+    if ms < 250:
+        ms += 60_000
+    return ms
+
+
+def install_autorefresh(enabled, mode, fixed_seconds):
+    """Schedule the next rerun. Returns the interval used (ms) or None."""
+    if not enabled:
+        return None
+    if not HAS_AUTOREFRESH:
+        return None
+
+    if mode == "Align to minute boundary":
+        interval_ms = ms_until_next_minute()
+    else:
+        interval_ms = max(int(fixed_seconds), 1) * 1000
+
+    st_autorefresh(interval=interval_ms, key="auto_refresh_tick")
+    return interval_ms
+
+
 # ---------------------------------------------------------------- UI
 def main():
     st.set_page_config(page_title="Theta / Delta: Calls vs Puts", layout="wide")
@@ -143,36 +185,84 @@ def main():
         client_id = st.text_input("Client ID", placeholder="XXXXXXX-100")
         access_token = st.text_input("Access token", type="password")
         symbol = st.text_input("Underlying", "NSE:NIFTY50-INDEX")
-        strikecount = st.number_input("Strikes fetched each side of ATM", 3, 50, 10)
+        strikecount = st.number_input("Strikes fetched each side of ATM", 3, 50, 6)
         n = st.slider("Strikes compared each side (OTM)", 1, 15, 3)
+
+        st.divider()
+        st.subheader("Auto-refresh")
+        refresh_enabled = st.checkbox("Enable auto-refresh", value=True)
+
+        refresh_mode = st.radio(
+            "Refresh mode",
+            ["Align to minute boundary", "Fixed interval"],
+            index=0,
+            help="Minute-boundary mode reruns right on 10:00, 10:01, 10:02, ...",
+        )
+
+        fixed_seconds = 60
+        if refresh_mode == "Fixed interval":
+            fixed_seconds = st.number_input(
+                "Refresh every (seconds)", 5, 3600, 60, 5,
+            )
+
+        if not HAS_AUTOREFRESH:
+            st.warning("Install `streamlit-autorefresh` for auto-refresh:\n\n`pip install streamlit-autorefresh`")
 
     if not (client_id and access_token):
         st.info("Enter your Fyers Client ID and Access Token in the sidebar.")
         return
 
+    # ---- schedule the next rerun BEFORE the fetch so the boundary is tight
+    interval_ms = install_autorefresh(refresh_enabled, refresh_mode, fixed_seconds)
+
     # ---- fetch
+    fetch_error = None
     try:
         resp = fetch_chain(client_id, access_token, symbol, strikecount)
         if resp.get("s") != "ok":
-            st.error(f"API error: {resp}")
-            return
+            fetch_error = f"API error: {resp}"
+            resp = None
+        else:
+            exp = resp["data"].get("expiryData", [])
+            if exp:
+                labels = {e["date"]: e["expiry"] for e in exp}
+                chosen = st.selectbox("Expiry", list(labels))
+                if chosen != exp[0]["date"]:
+                    resp = fetch_chain(client_id, access_token, symbol, strikecount, labels[chosen])
+                    if resp.get("s") != "ok":
+                        fetch_error = f"API error: {resp}"
+                        resp = None
 
-        exp = resp["data"].get("expiryData", [])
-        if exp:
-            labels = {e["date"]: e["expiry"] for e in exp}
-            chosen = st.selectbox("Expiry", list(labels))
-            if chosen != exp[0]["date"]:
-                resp = fetch_chain(client_id, access_token, symbol, strikecount, labels[chosen])
-                if resp.get("s") != "ok":
-                    st.error(f"API error: {resp}")
-                    return
-
-        chain = resp["data"]["optionsChain"]
-        spot = fetch_spot(client_id, access_token, symbol)
-        fwd = synthetic_forward(chain, spot)
+        if resp is not None:
+            chain = resp["data"]["optionsChain"]
+            spot = fetch_spot(client_id, access_token, symbol)
+            fwd = synthetic_forward(chain, spot)
+            st.session_state["last_refresh"] = datetime.now()
     except Exception as e:
-        st.error(f"Failed: {e}")
+        fetch_error = f"Failed: {e}"
+
+    # ---- last refreshed line
+    last_refresh = st.session_state.get("last_refresh")
+    hdr = st.columns([3, 2, 2])
+    if last_refresh is not None:
+        hdr[0].caption(f"🕒 Last refreshed: **{last_refresh.strftime('%H:%M:%S')}**")
+    else:
+        hdr[0].caption("🕒 Last refreshed: —")
+
+    if fetch_error:
+        st.error(fetch_error)
         return
+
+    hdr[1].caption(
+        f"Auto-refresh: **{'ON' if refresh_enabled and HAS_AUTOREFRESH else 'OFF'}**"
+        + (f" · every {interval_ms/1000:.0f}s" if interval_ms else "")
+    )
+    if refresh_enabled and refresh_mode == "Align to minute boundary":
+        hdr[2].caption("Next tick: on the next minute boundary")
+
+    if st.button("🔄 Refresh now"):
+        st.cache_data.clear()
+        st.rerun()
 
     df = build_chain_table(chain)
 
@@ -220,7 +310,7 @@ def main():
         hide_index=True, use_container_width=True,
     )
 
-    # ---- full chain in proper layout
+    # ---- full chain
     st.subheader("Full chain — |θ| / |Δ| by strike")
     st.caption(
         f"Calls summed: {', '.join(f'{k:,.0f}' for k in ce.Strike)}  |  "
@@ -241,6 +331,12 @@ def main():
 - **Put advantage** = Σ PE ratio ÷ Σ CE ratio − 1. This is a **skew** measure — what the market charges per unit of delta — not a profitability signal.
 - The ratio rises as you go further OTM, so use it to compare **sides at a matched distance**, not to pick how far out to sell. It ignores gamma and tail risk.
 - Delta is rounded to 2 decimals by the feed, so gaps under ~5% are noise.
+
+**Auto-refresh**
+- Minute-boundary mode computes milliseconds until the next minute (e.g. 10:00:37 → 23 s → rerun at 10:01:00) and re-arms each run, so ticks land on 10:00, 10:01, 10:02, ...
+- Fixed-interval mode reruns every *N* seconds.
+- `fetch_chain` is cached at `ttl=5s`, so each rerun hits the API, not the cache.
+- Click **🔄 Refresh now** to force a manual rerun (clears cache first).
             """
         )
 
