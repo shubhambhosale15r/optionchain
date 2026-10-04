@@ -4,6 +4,13 @@ Call vs Put decay per unit of delta (|theta| / |delta|) on the live Fyers option
 Layout:
     CE LTP | CE Theta | CE Δ | CE |θ|/|Δ| | Strike | PE |θ|/|Δ| | PE Δ | PE Theta | PE LTP
 
+Comparison metric (paired OTM ratio, geometric mean):
+    R_i     = (|θ|/|Δ|)_CE,i / (|θ|/|Δ|)_PE,i        i = 1..N  (i-th OTM call vs i-th OTM put)
+    R_final = (R_1 · R_2 · ... · R_N)^(1/N)
+    R_final > 1  -> CE has more theta per unit of delta
+    R_final < 1  -> PE has more theta per unit of delta
+    R_final ≈ 1  -> balanced
+
 Auto-refresh:
     - align to the next minute boundary (10:00, 10:01, 10:02, ...)  OR
     - fixed interval in seconds
@@ -23,6 +30,9 @@ try:
     HAS_AUTOREFRESH = True
 except ImportError:
     HAS_AUTOREFRESH = False
+
+# Delta is rounded to 2 decimals by the feed, so gaps below this are treated as "balanced".
+BALANCE_BAND = 0.05
 
 
 # ---------------------------------------------------------------- Fyers calls
@@ -97,8 +107,20 @@ def build_chain_table(chain):
     return df.reindex(columns=CHAIN_COLS)
 
 
+def geometric_mean(values):
+    """Geometric mean of the positive, finite values. NaN if there are none."""
+    v = pd.Series(values, dtype=float).replace([np.inf, -np.inf], np.nan).dropna()
+    v = v[v > 0]
+    return float(np.exp(np.log(v).mean())) if len(v) else np.nan
+
+
 def band_compare(df, ref, n):
-    """Pair the k-th OTM call above ATM with the k-th OTM put below ATM."""
+    """Pair the i-th OTM call above ATM with the i-th OTM put below ATM.
+
+    Returns (atm, ce, pe, pairs, sum_ce, sum_pe, r_final) where
+        R_i     = CE ratio_i / PE ratio_i
+        R_final = geometric mean of R_1..R_N
+    """
     atm = df.Strike.iloc[(df.Strike - ref).abs().argmin()]
     ce = df[(df.Strike > atm) & df["CE |θ|/|Δ|"].notna()].sort_values("Strike").head(n).reset_index(drop=True)
     pe = df[(df.Strike < atm) & df["PE |θ|/|Δ|"].notna()].sort_values("Strike", ascending=False).head(n).reset_index(drop=True)
@@ -116,17 +138,28 @@ def band_compare(df, ref, n):
         "Put Δ": pe["PE Δ"].values,
         "Put |θ|/|Δ|": pe["PE |θ|/|Δ|"].values,
     })
-    pairs["Put advantage %"] = (
-        (pairs["Put |θ|/|Δ|"] / pairs["Call |θ|/|Δ|"] - 1) * 100
-    ).round(1)
+    pairs["R = CE ÷ PE"] = pairs["Call |θ|/|Δ|"] / pairs["Put |θ|/|Δ|"]
 
     sc = ce["CE |θ|/|Δ|"].sum()
     sp = pe["PE |θ|/|Δ|"].sum()
-    return atm, ce, pe, pairs, sc, sp
+    r_final = geometric_mean(pairs["R = CE ÷ PE"])
+    return atm, ce, pe, pairs, sc, sp, r_final
+
+
+def interpret(r_final):
+    """('success'|'info'|'warning', message) for R_final, with a noise band around 1."""
+    if np.isnan(r_final):
+        return "warning", "Not enough valid OTM pairs to compute R_final."
+    if r_final > 1 + BALANCE_BAND:
+        return "success", f"R_final = {r_final:.3f} (> 1): **CE** has more theta per unit of delta, by {(r_final - 1) * 100:.1f}%."
+    if r_final < 1 / (1 + BALANCE_BAND):
+        return "success", f"R_final = {r_final:.3f} (< 1): **PE** has more theta per unit of delta, by {(1 / r_final - 1) * 100:.1f}%."
+    return "info", (f"R_final = {r_final:.3f} (≈ 1): balanced. Inside ±{BALANCE_BAND * 100:.0f}% "
+                    "delta-rounding noise, so no clear difference.")
 
 
 def style_chain(df, atm, ce_strikes, pe_strikes):
-    """Green for rows entering the sums; amber for ATM."""
+    """Green for rows entering the comparison; amber for ATM."""
     green = "background-color: rgba(46,160,67,0.30)"
     amber = "background-color: rgba(227,179,65,0.45); font-weight: 600"
 
@@ -274,8 +307,7 @@ def main():
         st.warning("Theta is constant across strikes — looks like placeholder data. Do not trust results.")
 
     # ---- compare
-    atm, ce, pe, pairs, sc, sp = band_compare(df, fwd, int(n))
-    adv = (sp / sc - 1) * 100 if sc else np.nan
+    atm, ce, pe, pairs, sc, sp, r_final = band_compare(df, fwd, int(n))
 
     # ---- headline metrics
     m = st.columns(5)
@@ -283,29 +315,25 @@ def main():
     m[1].metric("Synthetic forward", f"{fwd:,.2f}", f"{fwd - spot:+,.2f} basis")
     m[2].metric("ATM strike", f"{atm:,.0f}")
     m[3].metric("Strikes compared", f"{len(pairs)} per side")
-    m[4].metric("Put advantage", f"{adv:+.1f}%")
+    m[4].metric("R_final  (CE ÷ PE)", f"{r_final:.3f}" if not np.isnan(r_final) else "–")
 
     s = st.columns(3)
     s[0].metric("Σ CE |θ|/|Δ|", f"{sc:,.3f}")
     s[1].metric("Σ PE |θ|/|Δ|", f"{sp:,.3f}")
-    s[2].metric("Put ÷ Call", f"{(sp / sc if sc else float('nan')):.2f}×")
+    s[2].metric("1 ÷ R_final  (PE ÷ CE)", f"{1 / r_final:.3f}" if not np.isnan(r_final) else "–")
 
-    if not np.isnan(adv):
-        if abs(adv) < 5:
-            st.info("Gap under 5% — inside delta-rounding noise, treat as no clear difference.")
-        else:
-            side = "Puts" if adv > 0 else "Calls"
-            st.success(f"{side} pay more decay per unit of delta by {abs(adv):.1f}%.")
+    kind, msg = interpret(r_final)
+    getattr(st, kind)(msg)
 
     # ---- paired table
-    st.subheader("Strike-by-strike — k-th OTM call vs k-th OTM put")
+    st.subheader("Strike-by-strike — i-th OTM call vs i-th OTM put")
     st.dataframe(
         pairs.style.format({
             "Call Strike": "{:,.0f}", "Put Strike": "{:,.0f}",
             "Call LTP": "{:,.2f}", "Put LTP": "{:,.2f}",
             "Call Δ": "{:.2f}", "Put Δ": "{:.2f}",
             "Call |θ|/|Δ|": "{:,.3f}", "Put |θ|/|Δ|": "{:,.3f}",
-            "Put advantage %": "{:+.1f}%",
+            "R = CE ÷ PE": "{:.3f}",
         }),
         hide_index=True, use_container_width=True,
     )
@@ -313,8 +341,8 @@ def main():
     # ---- full chain
     st.subheader("Full chain — |θ| / |Δ| by strike")
     st.caption(
-        f"Calls summed: {', '.join(f'{k:,.0f}' for k in ce.Strike)}  |  "
-        f"Puts summed: {', '.join(f'{k:,.0f}' for k in pe.Strike[::-1])}"
+        f"Calls compared: {', '.join(f'{k:,.0f}' for k in ce.Strike)}  |  "
+        f"Puts compared: {', '.join(f'{k:,.0f}' for k in pe.Strike[::-1])}"
     )
     st.dataframe(
         style_chain(df, atm, set(ce.Strike), set(pe.Strike)),
@@ -323,13 +351,16 @@ def main():
 
     # ---- notes
     with st.expander("Formulas and caveats", expanded=False):
+        st.latex(r"R_i=\frac{(|\Theta|/|\Delta|)_{CE,i}}{(|\Theta|/|\Delta|)_{PE,i}}"
+                 r"\qquad R_{final}=\Big(\prod_{i=1}^{N}R_i\Big)^{1/N}")
         st.markdown(
             r"""
 - **Forward** F = K + C − P (put-call parity, nearest strikes, median). **ATM** = strike nearest F.
-- **|θ| / |Δ|** = |daily time decay| ÷ |delta| — decay earned per unit of directional exposure.
-- Calls summed = first N strikes above ATM; puts = first N below. Strike *k* above is paired with strike *k* below.
-- **Put advantage** = Σ PE ratio ÷ Σ CE ratio − 1. This is a **skew** measure — what the market charges per unit of delta — not a profitability signal.
-- The ratio rises as you go further OTM, so use it to compare **sides at a matched distance**, not to pick how far out to sell. It ignores gamma and tail risk.
+- **|θ| / |Δ|** = |daily time decay| ÷ |delta|, decay earned per unit of directional exposure.
+- Calls = first N strikes above ATM; puts = first N below. The i-th call is paired with the i-th put, so each pair sits at about the same distance from ATM.
+- **R_final > 1**: CE has more theta per unit of delta. **< 1**: PE has more. **≈ 1**: balanced (within ±5%).
+- The geometric mean is the right average for ratios: swapping CE and PE just flips R_final to 1/R_final. It also weights every OTM step equally, whereas a plain sum is dominated by the strikes nearest ATM, which have the largest values.
+- This is a **skew** measure, i.e. what the market charges per unit of delta. It is not a profitability signal, and it ignores gamma and tail risk.
 - Delta is rounded to 2 decimals by the feed, so gaps under ~5% are noise.
 
 **Auto-refresh**
