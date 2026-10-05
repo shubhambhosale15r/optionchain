@@ -172,7 +172,10 @@ def select_three_strikes(option_map, spot):
     selected = strikes[atm_index - 1:atm_index + 2]
 
     for strike in selected:
-        if "CE" not in option_map[strike] or "PE" not in option_map[strike]:
+        if (
+            "CE" not in option_map[strike]
+            or "PE" not in option_map[strike]
+        ):
             raise RuntimeError(
                 f"Both CE and PE are not available for strike {strike}."
             )
@@ -183,7 +186,9 @@ def find_breakeven_strikes(option_map, spot, atm_straddle):
     strikes = sorted(option_map.keys())
 
     if not strikes:
-        raise RuntimeError("No strikes available for breakeven calculation.")
+        raise RuntimeError(
+            "No strikes available for breakeven calculation."
+        )
 
     upper_breakeven = spot + atm_straddle
     lower_breakeven = spot - atm_straddle
@@ -235,10 +240,14 @@ def calculate_deviations(selected_strikes, option_map, quotes):
         pe_quote = quotes.get(pe_symbol)
 
         if not ce_quote:
-            raise RuntimeError(f"CE quote missing: {ce_symbol}")
+            raise RuntimeError(
+                f"CE quote missing: {ce_symbol}"
+            )
 
         if not pe_quote:
-            raise RuntimeError(f"PE quote missing: {pe_symbol}")
+            raise RuntimeError(
+                f"PE quote missing: {pe_symbol}"
+            )
 
         ce_ltp = ce_quote.get("lp")
         ce_atp = ce_quote.get("atp")
@@ -296,14 +305,18 @@ def get_ist_time():
     )
 
 def format_ist_time(dt):
-    return dt.strftime("%d-%b-%Y %I:%M:%S %p IST")
+    return dt.strftime(
+        "%d-%b-%Y %I:%M:%S %p IST"
+    )
 
 def ms_until_next_minute():
     now = pd.Timestamp.now()
     next_minute = now.ceil("min")
+
     milliseconds = int(
         (next_minute - now).total_seconds() * 1000
     )
+
     return max(milliseconds, 100)
 
 def install_autorefresh(enabled, mode, fixed_seconds):
@@ -345,7 +358,9 @@ def check_sell_signal(avg_ce_dev, avg_pe_dev):
     )
 
 def check_exit_signal(avg_ce_dev, avg_pe_dev):
-    return int(avg_ce_dev) == int(avg_pe_dev)
+    return (
+        int(avg_ce_dev) == int(avg_pe_dev)
+    )
 
 def enter_paper_trade(
     signal,
@@ -359,8 +374,6 @@ def enter_paper_trade(
     upper_breakeven,
     lower_breakeven
 ):
-    now = get_ist_time()
-
     st.session_state.paper_trade = {
         "signal": signal,
         "action": f"SELL {option_type}",
@@ -369,7 +382,7 @@ def enter_paper_trade(
         "symbol": symbol,
         "quantity": 65,
         "entry_price": float(entry_price),
-        "entry_time": now,
+        "entry_time": get_ist_time(),
         "entry_avg_ce_dev": float(avg_ce_dev),
         "entry_avg_pe_dev": float(avg_pe_dev),
         "entry_spot": float(spot),
@@ -389,6 +402,7 @@ def exit_paper_trade(
         return
 
     exit_time = get_ist_time()
+
     entry_price = trade["entry_price"]
     quantity = trade["quantity"]
 
@@ -403,9 +417,13 @@ def exit_paper_trade(
         "Strike": trade["strike"],
         "Symbol": trade["symbol"],
         "Qty": quantity,
-        "Entry Time": format_ist_time(trade["entry_time"]),
+        "Entry Time": format_ist_time(
+            trade["entry_time"]
+        ),
         "Entry Price": entry_price,
-        "Exit Time": format_ist_time(exit_time),
+        "Exit Time": format_ist_time(
+            exit_time
+        ),
         "Exit Price": float(current_price),
         "P&L": float(pnl),
         "Entry Spot": trade["entry_spot"],
@@ -416,7 +434,10 @@ def exit_paper_trade(
         "Exit Avg PE Dev": float(avg_pe_dev)
     }
 
-    st.session_state.trade_log.append(trade_record)
+    st.session_state.trade_log.append(
+        trade_record
+    )
+
     st.session_state.paper_trade = None
 
 initialize_paper_state()
@@ -469,7 +490,10 @@ with st.sidebar:
 
     st.divider()
 
-    if st.button("Reset Paper Trading", use_container_width=True):
+    if st.button(
+        "Reset Paper Trading",
+        use_container_width=True
+    ):
         st.session_state.paper_trade = None
         st.session_state.trade_log = []
         st.rerun()
@@ -487,7 +511,9 @@ st.caption(
 )
 
 if not client_id or not access_token:
-    st.info("Enter Client ID and Access Token in the sidebar.")
+    st.info(
+        "Enter Client ID and Access Token in the sidebar."
+    )
     st.stop()
 
 try:
@@ -496,7 +522,9 @@ try:
         access_token
     )
 except Exception as e:
-    st.error(f"Fyers initialization failed: {e}")
+    st.error(
+        f"Fyers initialization failed: {e}"
+    )
     st.stop()
 
 try:
@@ -507,13 +535,19 @@ try:
         0
     )
 except Exception as e:
-    st.error(f"Option chain fetch failed: {e}")
+    st.error(
+        f"Option chain fetch failed: {e}"
+    )
     st.stop()
 
-expiry_data = get_expiry_data(initial_chain)
+expiry_data = get_expiry_data(
+    initial_chain
+)
 
 if not expiry_data:
-    st.error("No expiry data returned by the option chain.")
+    st.error(
+        "No expiry data returned by the option chain."
+    )
     st.stop()
 
 expiry_labels = []
@@ -523,6 +557,7 @@ for item in expiry_data:
     expiry_labels.append(
         format_expiry(item)
     )
+
     expiry_values.append(
         get_expiry_value(item)
     )
@@ -533,7 +568,9 @@ expiry_index = st.sidebar.selectbox(
     format_func=lambda i: expiry_labels[i]
 )
 
-selected_expiry = expiry_values[expiry_index]
+selected_expiry = expiry_values[
+    expiry_index
+]
 
 try:
     chain_response = fetch_chain(
@@ -543,7 +580,9 @@ try:
         selected_expiry
     )
 except Exception as e:
-    st.error(f"Option chain fetch failed: {e}")
+    st.error(
+        f"Option chain fetch failed: {e}"
+    )
     st.stop()
 
 try:
@@ -552,7 +591,9 @@ try:
         underlying
     )
 except Exception as e:
-    st.error(f"Spot fetch failed: {e}")
+    st.error(
+        f"Spot fetch failed: {e}"
+    )
     st.stop()
 
 chain_rows = get_option_chain_rows(
@@ -560,7 +601,9 @@ chain_rows = get_option_chain_rows(
 )
 
 if not chain_rows:
-    st.error("No option chain rows returned.")
+    st.error(
+        "No option chain rows returned."
+    )
     st.stop()
 
 option_map = build_option_map(
@@ -588,20 +631,32 @@ try:
         )
     )
 except Exception as e:
-    st.error(f"ATM option quotes fetch failed: {e}")
+    st.error(
+        f"ATM option quotes fetch failed: {e}"
+    )
     st.stop()
 
-atm_ce_quote = atm_quotes.get(atm_ce_symbol)
-atm_pe_quote = atm_quotes.get(atm_pe_symbol)
+atm_ce_quote = atm_quotes.get(
+    atm_ce_symbol
+)
+
+atm_pe_quote = atm_quotes.get(
+    atm_pe_symbol
+)
 
 if not atm_ce_quote or not atm_pe_quote:
-    st.error("ATM CE/PE quotes unavailable.")
+    st.error(
+        "ATM CE/PE quotes unavailable."
+    )
     st.stop()
 
 atm_ce_ltp = atm_ce_quote.get("lp")
 atm_pe_ltp = atm_pe_quote.get("lp")
 
-if not valid_number(atm_ce_ltp) or not valid_number(atm_pe_ltp):
+if (
+    not valid_number(atm_ce_ltp)
+    or not valid_number(atm_pe_ltp)
+):
     st.error(
         f"Invalid ATM option prices: "
         f"CE={atm_ce_ltp}, PE={atm_pe_ltp}"
@@ -611,7 +666,10 @@ if not valid_number(atm_ce_ltp) or not valid_number(atm_pe_ltp):
 atm_ce_ltp = float(atm_ce_ltp)
 atm_pe_ltp = float(atm_pe_ltp)
 
-atm_straddle = atm_ce_ltp + atm_pe_ltp
+atm_straddle = (
+    atm_ce_ltp +
+    atm_pe_ltp
+)
 
 try:
     (
@@ -634,6 +692,7 @@ for strike in selected_strikes:
     trade_symbols.append(
         option_map[strike]["CE"]
     )
+
     trade_symbols.append(
         option_map[strike]["PE"]
     )
@@ -646,13 +705,25 @@ trade_symbols.append(
     option_map[lower_strike]["PE"]
 )
 
+if st.session_state.paper_trade is not None:
+    open_trade_symbol = (
+        st.session_state.paper_trade["symbol"]
+    )
+
+    if open_trade_symbol not in trade_symbols:
+        trade_symbols.append(
+            open_trade_symbol
+        )
+
 try:
     quotes = fetch_option_quotes(
         fyers,
         tuple(trade_symbols)
     )
 except Exception as e:
-    st.error(f"Option quotes fetch failed: {e}")
+    st.error(
+        f"Option quotes fetch failed: {e}"
+    )
     st.stop()
 
 try:
@@ -666,7 +737,9 @@ try:
         quotes
     )
 except Exception as e:
-    st.error(f"Deviation calculation failed: {e}")
+    st.error(
+        f"Deviation calculation failed: {e}"
+    )
     st.stop()
 
 buy_signal = check_buy_signal(
@@ -687,7 +760,9 @@ exit_signal = check_exit_signal(
 if st.session_state.paper_trade is not None:
     open_trade = st.session_state.paper_trade
     current_symbol = open_trade["symbol"]
-    current_quote = quotes.get(current_symbol)
+    current_quote = quotes.get(
+        current_symbol
+    )
 
     if current_quote and valid_number(
         current_quote.get("lp")
@@ -705,18 +780,26 @@ if st.session_state.paper_trade is not None:
             )
 else:
     if buy_signal:
-        trade_symbol = option_map[lower_strike]["PE"]
-        trade_quote = quotes.get(trade_symbol)
+        trade_symbol = option_map[
+            lower_strike
+        ]["PE"]
 
-        if trade_quote and valid_number(
-            trade_quote.get("lp")
+        trade_quote = quotes.get(
+            trade_symbol
+        )
+
+        if (
+            trade_quote
+            and valid_number(trade_quote.get("lp"))
         ):
             enter_paper_trade(
                 signal="BUY",
                 option_type="PE",
                 strike=lower_strike,
                 symbol=trade_symbol,
-                entry_price=float(trade_quote["lp"]),
+                entry_price=float(
+                    trade_quote["lp"]
+                ),
                 avg_ce_dev=average_ce_deviation,
                 avg_pe_dev=average_pe_deviation,
                 spot=spot,
@@ -725,18 +808,26 @@ else:
             )
 
     elif sell_signal:
-        trade_symbol = option_map[upper_strike]["CE"]
-        trade_quote = quotes.get(trade_symbol)
+        trade_symbol = option_map[
+            upper_strike
+        ]["CE"]
 
-        if trade_quote and valid_number(
-            trade_quote.get("lp")
+        trade_quote = quotes.get(
+            trade_symbol
+        )
+
+        if (
+            trade_quote
+            and valid_number(trade_quote.get("lp"))
         ):
             enter_paper_trade(
                 signal="SELL",
                 option_type="CE",
                 strike=upper_strike,
                 symbol=trade_symbol,
-                entry_price=float(trade_quote["lp"]),
+                entry_price=float(
+                    trade_quote["lp"]
+                ),
                 avg_ce_dev=average_ce_deviation,
                 avg_pe_dev=average_pe_deviation,
                 spot=spot,
@@ -778,12 +869,16 @@ if st.session_state.paper_trade is None:
     )
 else:
     open_trade = st.session_state.paper_trade
+
     m[5].metric(
         "Paper Position",
-        f"SELL {open_trade['option_type']} {open_trade['strike']:,.0f}"
+        f"SELL {open_trade['option_type']} "
+        f"{open_trade['strike']:,.0f}"
     )
 
-st.subheader("ATM Straddle / Breakevens")
+st.subheader(
+    "ATM Straddle / Breakevens"
+)
 
 be_df = pd.DataFrame([
     {
@@ -802,7 +897,9 @@ st.dataframe(
     hide_index=True
 )
 
-st.subheader("CE / PE LTP − ATP")
+st.subheader(
+    "CE / PE LTP − ATP"
+)
 
 display_df = calculation_df[
     [
@@ -822,7 +919,9 @@ st.dataframe(
     hide_index=True
 )
 
-st.subheader("Signal Conditions")
+st.subheader(
+    "Signal Conditions"
+)
 
 signal_df = pd.DataFrame([
     {
@@ -839,7 +938,10 @@ signal_df = pd.DataFrame([
     },
     {
         "Condition": "int(Avg CE Dev) == int(Avg PE Dev)",
-        "Result": int(average_ce_deviation) == int(average_pe_deviation)
+        "Result": (
+            int(average_ce_deviation)
+            == int(average_pe_deviation)
+        )
     }
 ])
 
@@ -849,7 +951,9 @@ st.dataframe(
     hide_index=True
 )
 
-st.subheader("Calculation")
+st.subheader(
+    "Calculation"
+)
 
 for _, row in calculation_df.iterrows():
     st.write(
@@ -892,26 +996,35 @@ st.write(
     f"**{average_pe_deviation:+,.2f}**"
 )
 
-st.subheader("Paper Trade")
+st.subheader(
+    "Paper Trade"
+)
 
 if st.session_state.paper_trade is None:
-    st.info("No open paper position.")
+    st.info(
+        "No open paper position."
+    )
 else:
     trade = st.session_state.paper_trade
-    current_quote = quotes.get(trade["symbol"])
+
+    current_quote = quotes.get(
+        trade["symbol"]
+    )
 
     current_price = None
     unrealized_pnl = None
 
-    if current_quote and valid_number(
-        current_quote.get("lp")
+    if (
+        current_quote
+        and valid_number(current_quote.get("lp"))
     ):
         current_price = float(
             current_quote["lp"]
         )
 
         unrealized_pnl = (
-            trade["entry_price"] - current_price
+            trade["entry_price"]
+            - current_price
         ) * trade["quantity"]
 
     open_trade_df = pd.DataFrame([
@@ -937,7 +1050,9 @@ else:
         hide_index=True
     )
 
-st.subheader("Trade Log")
+st.subheader(
+    "Trade Log"
+)
 
 if st.session_state.trade_log:
     trade_log_df = pd.DataFrame(
@@ -945,10 +1060,15 @@ if st.session_state.trade_log:
     )
 
     total_pnl = trade_log_df["P&L"].sum()
-    total_trades = len(trade_log_df)
+
+    total_trades = len(
+        trade_log_df
+    )
+
     winning_trades = (
         trade_log_df["P&L"] > 0
     ).sum()
+
     losing_trades = (
         trade_log_df["P&L"] < 0
     ).sum()
@@ -981,13 +1101,22 @@ if st.session_state.trade_log:
         hide_index=True
     )
 else:
-    st.info("No completed paper trades yet.")
+    st.info(
+        "No completed paper trades yet."
+    )
 
-with st.expander("Raw Quotes API Data"):
+with st.expander(
+    "Raw Quotes API Data"
+):
     raw_rows = []
 
-    for symbol in dict.fromkeys(trade_symbols):
-        quote = quotes.get(symbol, {})
+    for symbol in dict.fromkeys(
+        trade_symbols
+    ):
+        quote = quotes.get(
+            symbol,
+            {}
+        )
 
         raw_rows.append({
             "Symbol": symbol,
@@ -1004,7 +1133,9 @@ with st.expander("Raw Quotes API Data"):
         hide_index=True
     )
 
-with st.expander("Strategy Formula"):
+with st.expander(
+    "Strategy Formula"
+):
     st.latex(
         r"ATM\ Straddle=ATM_{CE,LTP}+ATM_{PE,LTP}"
     )
@@ -1026,11 +1157,13 @@ with st.expander("Strategy Formula"):
     )
 
     st.latex(
-        r"AvgCEDev=\frac{CEDev_{ATM-1}+CEDev_{ATM}+CEDev_{ATM+1}}{3}"
+        r"AvgCEDev="
+        r"\frac{CEDev_{ATM-1}+CEDev_{ATM}+CEDev_{ATM+1}}{3}"
     )
 
     st.latex(
-        r"AvgPEDev=\frac{PEDev_{ATM-1}+PEDev_{ATM}+PEDev_{ATM+1}}{3}"
+        r"AvgPEDev="
+        r"\frac{PEDev_{ATM-1}+PEDev_{ATM}+PEDev_{ATM+1}}{3}"
     )
 
     st.write(
@@ -1039,7 +1172,8 @@ with st.expander("Strategy Formula"):
     )
 
     st.write(
-        "Buy signal trades the PE at the strike closest to the lower breakeven."
+        "Buy signal trades the PE at the strike closest "
+        "to the lower breakeven."
     )
 
     st.write(
@@ -1048,7 +1182,8 @@ with st.expander("Strategy Formula"):
     )
 
     st.write(
-        "Sell signal trades the CE at the strike closest to the upper breakeven."
+        "Sell signal trades the CE at the strike closest "
+        "to the upper breakeven."
     )
 
     st.write(
@@ -1063,6 +1198,8 @@ with st.expander("Strategy Formula"):
         "All trades are paper trades. No orders are sent to Fyers."
     )
 
-if st.button("Manual Refresh"):
+if st.button(
+    "Manual Refresh"
+):
     st.cache_data.clear()
     st.rerun()
