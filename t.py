@@ -1,91 +1,23 @@
-"""
-Relative CE/PE ATP-LTP Implied Level
--------------------------------------
-
-For ATM-1, ATM and ATM+1:
-
-    CE deviation =
-        CE_LTP - CE_ATP
-
-    PE deviation =
-        PE_LTP - PE_ATP
-
-    Relative deviation =
-        PE deviation - CE deviation
-
-    Level_K =
-        K + Relative deviation
-
-Therefore:
-
-    Level_K =
-        K
-        + (PE_LTP - PE_ATP)
-        - (CE_LTP - CE_ATP)
-
-Final level:
-
-    Average Level =
-        mean(
-            Level_ATM-1,
-            Level_ATM,
-            Level_ATM+1
-        )
-
-Signal:
-
-    Signal =
-        Average Level - Spot
-
-Important:
-    This is NOT standard synthetic spot.
-
-    It measures the relative position of
-    CE and PE LTP versus their own Fyers
-    Average Traded Price (ATP).
-
-Examples:
-
-    CE above ATP by 10
-    PE above ATP by 5
-
-    Relative deviation = 5 - 10 = -5
-
-    So:
-
-        Level = K - 5
-
-This remains valid even when BOTH CE and PE
-are above ATP or BOTH are below ATP.
-"""
-
-from datetime import datetime
-
+import datetime
 import numpy as np
 import pandas as pd
 import streamlit as st
+
 from fyers_apiv3 import fyersModel
 
-
-# ==============================================================
-# Optional autorefresh
-# ==============================================================
-
+# Optional auto refresh
 try:
     from streamlit_autorefresh import st_autorefresh
-
-    HAS_AUTOREFRESH = True
-
+    AUTO_REFRESH_AVAILABLE = True
 except ImportError:
-    HAS_AUTOREFRESH = False
+    AUTO_REFRESH_AVAILABLE = False
 
 
-# ==============================================================
-# Fyers
-# ==============================================================
+# ============================================================
+# FYERS CONNECTION
+# ============================================================
 
 def get_fyers(client_id, access_token):
-
     return fyersModel.FyersModel(
         client_id=client_id,
         token=access_token,
@@ -94,200 +26,148 @@ def get_fyers(client_id, access_token):
     )
 
 
-# ==============================================================
-# Option chain
-# ==============================================================
+# ============================================================
+# OPTION CHAIN
+# ============================================================
 
-@st.cache_data(ttl=5, show_spinner=False)
-def fetch_chain(
-    client_id,
-    access_token,
-    symbol,
-    strikecount,
-    timestamp=""
-):
+@st.cache_data(ttl=5)
+def fetch_chain(client_id, access_token, underlying, strikecount, expiry_date):
+    fyers = get_fyers(client_id, access_token)
 
-    fyers = get_fyers(
-        client_id,
-        access_token
-    )
+    data = {
+        "symbol": underlying,
+        "strikecount": strikecount,
+        "timestamp": "",
+        "option_type": "all",
+        "expiry": expiry_date,
+        "greeks": "1"
+    }
 
-    return fyers.optionchain(
-        data={
-            "symbol": symbol,
-            "strikecount": int(strikecount),
-            "timestamp": timestamp,
-            "greeks": "1"
-        }
-    )
-
-
-# ==============================================================
-# Spot
-# ==============================================================
-
-@st.cache_data(ttl=5, show_spinner=False)
-def fetch_spot(
-    client_id,
-    access_token,
-    symbol
-):
-
-    fyers = get_fyers(
-        client_id,
-        access_token
-    )
-
-    response = fyers.quotes(
-        data={
-            "symbols": symbol
-        }
-    )
-
-    if (
-        response.get("s") != "ok"
-        or not response.get("d")
-        or response["d"][0].get("s") != "ok"
-    ):
-        raise RuntimeError(
-            f"Quotes API error while fetching spot: {response}"
-        )
-
-    return float(
-        response["d"][0]["v"]["lp"]
-    )
-
-
-# ==============================================================
-# Quotes API
-# ==============================================================
-#
-# Fetch CE/PE quotes together.
-#
-# We need:
-#
-# ATM-1 CE
-# ATM-1 PE
-# ATM CE
-# ATM PE
-# ATM+1 CE
-# ATM+1 PE
-#
-# From the same Quotes API response:
-#
-#     lp  = current LTP
-#     atp = Average Traded Price
-#
-# ==============================================================
-@st.cache_data(ttl=5, show_spinner=False)
-def fetch_option_quotes(
-    client_id,
-    access_token,
-    symbols_tuple
-):
-
-    symbols = list(symbols_tuple)
-
-    if not symbols:
-
-        raise RuntimeError(
-            "No option symbols supplied to Quotes API."
-        )
-
-    if len(symbols) > 50:
-
-        raise RuntimeError(
-            f"Quotes API supports max 50 symbols. "
-            f"Received {len(symbols)}."
-        )
-
-    fyers = get_fyers(
-        client_id,
-        access_token
-    )
-
-    response = fyers.quotes(
-        data={
-            "symbols": ",".join(symbols)
-        }
-    )
+    response = fyers.optionchain(data=data)
 
     if response.get("s") != "ok":
+        st.error(f"Option chain error: {response}")
+        return None
 
-        raise RuntimeError(
-            f"Option Quotes API error: {response}"
-        )
+    return response
+
+
+# ============================================================
+# SPOT PRICE
+# ============================================================
+
+@st.cache_data(ttl=5)
+def fetch_spot(client_id, access_token, underlying):
+    fyers = get_fyers(client_id, access_token)
+
+    data = {
+        "symbols": underlying
+    }
+
+    response = fyers.quotes(data=data)
+
+    if response.get("s") != "ok":
+        st.error(f"Spot quote error: {response}")
+        return None
+
+    try:
+        return float(response["d"][0]["v"]["lp"])
+    except Exception as e:
+        st.error(f"Could not read spot price: {e}")
+        return None
+
+
+# ============================================================
+# OPTION QUOTES
+#
+# Fetches:
+#   lp  = LTP
+#   atp = Average Traded Price
+# ============================================================
+
+@st.cache_data(ttl=5)
+def fetch_option_quotes(client_id, access_token, symbols):
+
+    if not symbols:
+        return {}
+
+    if len(symbols) > 50:
+        st.error("Quotes API supports maximum 50 symbols per request.")
+        return {}
+
+    fyers = get_fyers(client_id, access_token)
+
+    data = {
+        "symbols": ",".join(symbols)
+    }
+
+    response = fyers.quotes(data=data)
+
+    if response.get("s") != "ok":
+        st.error(f"Quotes API error: {response}")
+        return {}
 
     result = {}
 
     for item in response.get("d", []):
 
-        if item.get("s") != "ok":
-            continue
+        symbol = item.get("n")
 
-        symbol = (
-            item.get("n")
-            or (item.get("v") or {}).get("symbol")
-        )
-
-        values = item.get("v") or {}
+        if not symbol:
+            symbol = item.get("v", {}).get("symbol")
 
         if not symbol:
             continue
 
-        try:
-            lp = float(values.get("lp"))
-        except (TypeError, ValueError):
-            lp = np.nan
+        v = item.get("v", {})
 
         try:
-            atp = float(values.get("atp"))
-        except (TypeError, ValueError):
-            atp = np.nan
+            result[symbol] = {
+                "lp": float(v.get("lp", np.nan)),
+                "atp": float(v.get("atp", np.nan)),
+                "bid": float(v.get("bid", np.nan)),
+                "ask": float(v.get("ask", np.nan)),
+                "volume": float(v.get("volume", np.nan))
+            }
 
-        result[symbol] = {
-
-            "lp": lp,
-            "atp": atp,
-
-            "bid": values.get("bid"),
-            "ask": values.get("ask"),
-
-            "volume": values.get("volume"),
-
-            "symbol": symbol,
-        }
+        except Exception:
+            continue
 
     return result
 
 
-# ==============================================================
-# Build option map
-# ==============================================================
+# ============================================================
+# BUILD OPTION MAP
+#
+# strike -> CE / PE symbol
+# ============================================================
 
-def build_option_map(chain):
-    """
-    Creates:
+def build_option_map(chain_response):
 
-        strike -> {
-            CE: option symbol,
-            PE: option symbol
-        }
-    """
+    option_map = {}
 
-    result = {}
+    if not chain_response:
+        return option_map
+
+    chain = chain_response.get("data", {}).get("optionsChain", [])
 
     for row in chain:
 
-        option_type = row.get("option_type")
-
-        if option_type not in ("CE", "PE"):
-            continue
-
-        strike = row.get("strike_price")
+        strike = row.get("strike")
 
         if strike is None:
             continue
+
+        try:
+            strike = float(strike)
+        except Exception:
+            continue
+
+        option_type = str(
+            row.get("option_type")
+            or row.get("type")
+            or ""
+        ).upper()
 
         symbol = (
             row.get("symbol")
@@ -298,105 +178,71 @@ def build_option_map(chain):
         if not symbol:
             continue
 
-        if strike not in result:
-            result[strike] = {}
+        if option_type in ["CE", "CALL"]:
+            option_type = "CE"
 
-        result[strike][option_type] = symbol
+        elif option_type in ["PE", "PUT"]:
+            option_type = "PE"
 
-    return result
-
-
-# ==============================================================
-# Select ATM-1 / ATM / ATM+1
-# ==============================================================
-
-def select_three_strikes(
-    option_map,
-    spot
-):
-
-    strikes = sorted(
-        option_map.keys()
-    )
-
-    if not strikes:
-
-        raise RuntimeError(
-            "No strikes available in option chain."
-        )
-
-    # ----------------------------------------------------------
-    # ATM = strike closest to actual NIFTY spot
-    # ----------------------------------------------------------
-
-    atm = min(
-        strikes,
-        key=lambda x: abs(x - spot)
-    )
-
-    atm_index = strikes.index(atm)
-
-    if atm_index == 0:
-
-        raise RuntimeError(
-            "ATM has no lower strike available for ATM-1."
-        )
-
-    if atm_index == len(strikes) - 1:
-
-        raise RuntimeError(
-            "ATM has no higher strike available for ATM+1."
-        )
-
-    lower = strikes[atm_index - 1]
-    upper = strikes[atm_index + 1]
-
-    selected = [
-        lower,
-        atm,
-        upper
-    ]
-
-    # ----------------------------------------------------------
-    # Make sure CE and PE both exist
-    # ----------------------------------------------------------
-
-    for strike in selected:
+        else:
+            continue
 
         if strike not in option_map:
+            option_map[strike] = {}
 
-            raise RuntimeError(
-                f"Strike {strike} missing from option map."
-            )
+        option_map[strike][option_type] = symbol
 
-        if "CE" not in option_map[strike]:
+    return option_map
 
-            raise RuntimeError(
-                f"CE missing for strike {strike}."
-            )
 
-        if "PE" not in option_map[strike]:
+# ============================================================
+# SELECT ATM-1 / ATM / ATM+1
+# ============================================================
 
-            raise RuntimeError(
-                f"PE missing for strike {strike}."
-            )
+def select_three_strikes(option_map, spot):
 
-    return (
-        lower,
-        atm,
-        upper
+    strikes = sorted(option_map.keys())
+
+    if not strikes:
+        return None, None
+
+    # Find closest strike to spot
+    atm_index = min(
+        range(len(strikes)),
+        key=lambda i: abs(strikes[i] - spot)
     )
 
+    # Need one strike below and one above
+    if atm_index == 0 or atm_index == len(strikes) - 1:
+        return None, None
 
-# ==============================================================
-# Calculate relative ATP deviation
-# ==============================================================
+    atm_minus_1 = strikes[atm_index - 1]
+    atm = strikes[atm_index]
+    atm_plus_1 = strikes[atm_index + 1]
 
-def calculate_levels(
-    selected_strikes,
-    option_map,
-    quotes
-):
+    selected = [
+        atm_minus_1,
+        atm,
+        atm_plus_1
+    ]
+
+    # Validate both CE and PE exist
+    for strike in selected:
+
+        if "CE" not in option_map[strike]:
+            return None, None
+
+        if "PE" not in option_map[strike]:
+            return None, None
+
+    return selected, atm
+
+
+# ============================================================
+# CALCULATE CE / PE DEVIATIONS
+# ============================================================
+
+def calculate_deviations(selected_strikes, option_map, quotes):
 
     rows = []
 
@@ -405,962 +251,382 @@ def calculate_levels(
         ce_symbol = option_map[strike]["CE"]
         pe_symbol = option_map[strike]["PE"]
 
-        ce_quote = quotes.get(
-            ce_symbol
-        )
+        ce_quote = quotes.get(ce_symbol)
+        pe_quote = quotes.get(pe_symbol)
 
-        pe_quote = quotes.get(
-            pe_symbol
-        )
-
-        if ce_quote is None:
-
-            raise RuntimeError(
-                f"No Quotes API response for CE: {ce_symbol}"
-            )
-
-        if pe_quote is None:
-
-            raise RuntimeError(
-                f"No Quotes API response for PE: {pe_symbol}"
-            )
-
-        # ------------------------------------------------------
-        # Current prices
-        # ------------------------------------------------------
+        if ce_quote is None or pe_quote is None:
+            continue
 
         ce_ltp = ce_quote["lp"]
-        pe_ltp = pe_quote["lp"]
-
-        # ------------------------------------------------------
-        # Average traded prices
-        # ------------------------------------------------------
-
         ce_atp = ce_quote["atp"]
+
+        pe_ltp = pe_quote["lp"]
         pe_atp = pe_quote["atp"]
 
-        values = [
-            ce_ltp,
-            ce_atp,
-            pe_ltp,
-            pe_atp
-        ]
-
-        if any(
-            pd.isna(x) or x <= 0
-            for x in values
-        ):
-
-            raise RuntimeError(
-                f"Invalid quote data for strike {strike}: "
-                f"CE={ce_quote}, PE={pe_quote}"
-            )
-
-        # ======================================================
-        # Individual deviations from ATP
-        # ======================================================
-
-        # Positive = LTP above ATP
-        # Negative = LTP below ATP
-
-        ce_deviation = (
-            ce_ltp - ce_atp
-        )
-
-        pe_deviation = (
-            pe_ltp - pe_atp
-        )
-
-        # ======================================================
-        # Relative CE/PE deviation
-        # ======================================================
+        # ----------------------------------------------------
+        # CE deviation
         #
-        # This is the important metric.
-        #
-        # PE deviation - CE deviation
-        #
-        # Equivalent to:
-        #
-        # (PE_LTP - PE_ATP)
-        # -
-        # (CE_LTP - CE_ATP)
-        #
-        # ======================================================
+        # Positive = CE LTP above its ATP
+        # Negative = CE LTP below its ATP
+        # ----------------------------------------------------
 
-        relative_deviation = (
-            pe_deviation
-            - ce_deviation
-        )
+        ce_dev = ce_ltp - ce_atp
 
-        # ======================================================
-        # Convert relative deviation into a price level
-        # ======================================================
+        # ----------------------------------------------------
+        # PE deviation
+        #
+        # Positive = PE LTP above its ATP
+        # Negative = PE LTP below its ATP
+        # ----------------------------------------------------
 
-        level = (
-            strike
-            + relative_deviation
-        )
+        pe_dev = pe_ltp - pe_atp
 
         rows.append({
-
             "Strike": strike,
 
-            # ------------------------------
-            # CE
-            # ------------------------------
-
-            "CE Symbol": ce_symbol,
-
-            "CE ATP": ce_atp,
-
             "CE LTP": ce_ltp,
-
-            "CE LTP-ATP": ce_deviation,
-
-            # ------------------------------
-            # PE
-            # ------------------------------
-
-            "PE Symbol": pe_symbol,
+            "CE ATP": ce_atp,
+            "CE Dev": ce_dev,
 
             "PE LTP": pe_ltp,
-
             "PE ATP": pe_atp,
-
-            "PE LTP-ATP": pe_deviation,
-
-            # ------------------------------
-            # Relative metric
-            # ------------------------------
-
-            "PE Dev - CE Dev": relative_deviation,
-
-            # ------------------------------
-            # Implied level
-            # ------------------------------
-
-            "Calculated Level": level,
+            "PE Dev": pe_dev
         })
 
-    result = pd.DataFrame(
-        rows
-    )
+    if not rows:
+        return None, None, None
 
-    result = (
-        result
-        .sort_values("Strike")
-        .reset_index(drop=True)
-    )
+    df = pd.DataFrame(rows)
 
-    # ==========================================================
-    # Average of ATM-1 / ATM / ATM+1
-    # ==========================================================
+    # ========================================================
+    # AVERAGES ACROSS ATM-1 / ATM / ATM+1
+    # ========================================================
 
-    average_level = (
-        result["Calculated Level"].mean()
-    )
+    avg_ce_dev = df["CE Dev"].mean()
+    avg_pe_dev = df["PE Dev"].mean()
 
-    average_relative_deviation = (
-        result["PE Dev - CE Dev"].mean()
-    )
-
-    return (
-        result,
-        float(average_level),
-        float(average_relative_deviation)
-    )
+    return df, avg_ce_dev, avg_pe_dev
 
 
-# ==============================================================
-# Auto refresh
-# ==============================================================
+# ============================================================
+# STREAMLIT UI
+# ============================================================
 
-def ms_until_next_minute():
+st.set_page_config(
+    page_title="NIFTY CE / PE ATP Deviation",
+    layout="wide"
+)
 
-    now = datetime.now()
+st.title("NIFTY CE / PE ATP Deviation")
 
-    seconds = (
-        now.second
-        + now.microsecond / 1_000_000
-    )
-
-    ms = int(
-        round(
-            (60.0 - seconds) * 1000
-        )
-    )
-
-    if ms < 250:
-
-        ms += 60_000
-
-    return ms
+st.caption(
+    "Measures how far CE and PE LTP are from their own Average Traded Price (ATP)."
+)
 
 
-def install_autorefresh(
-    enabled,
-    mode,
-    fixed_seconds
-):
+# ============================================================
+# SIDEBAR
+# ============================================================
 
-    if not enabled:
-        return None
+st.sidebar.header("Settings")
 
-    if not HAS_AUTOREFRESH:
-        return None
+client_id = st.sidebar.text_input(
+    "Fyers Client ID"
+)
 
-    if mode == "Align to minute boundary":
+access_token = st.sidebar.text_input(
+    "Access Token",
+    type="password"
+)
 
-        interval_ms = (
-            ms_until_next_minute()
-        )
+underlying = st.sidebar.text_input(
+    "Underlying",
+    value="NSE:NIFTY50-INDEX"
+)
 
-    else:
+strikecount = st.sidebar.number_input(
+    "Strike Count",
+    min_value=3,
+    max_value=20,
+    value=5,
+    step=1
+)
 
-        interval_ms = (
-            max(
-                int(fixed_seconds),
-                1
-            ) * 1000
-        )
+refresh_seconds = st.sidebar.number_input(
+    "Auto Refresh Seconds",
+    min_value=0,
+    max_value=300,
+    value=5,
+    step=1
+)
+
+
+# ============================================================
+# AUTO REFRESH
+# ============================================================
+
+if AUTO_REFRESH_AVAILABLE and refresh_seconds > 0:
 
     st_autorefresh(
-        interval=interval_ms,
-        key="auto_refresh_tick"
+        interval=refresh_seconds * 1000,
+        key="nifty_atp_refresh"
     )
 
-    return interval_ms
+
+# ============================================================
+# VALIDATE LOGIN
+# ============================================================
+
+if not client_id or not access_token:
+
+    st.info("Enter Fyers Client ID and Access Token.")
+    st.stop()
 
 
-# ==============================================================
-# Main
-# ==============================================================
+# ============================================================
+# FETCH SPOT
+# ============================================================
 
-def main():
+spot = fetch_spot(
+    client_id,
+    access_token,
+    underlying
+)
 
-    st.set_page_config(
-        page_title="Relative CE/PE ATP Signal",
-        layout="wide"
+if spot is None:
+    st.stop()
+
+
+# ============================================================
+# EXPIRY
+# ============================================================
+
+st.sidebar.markdown("---")
+
+expiry_date = st.sidebar.text_input(
+    "Expiry Date",
+    value=""
+)
+
+st.sidebar.caption(
+    "Leave blank if your option-chain implementation handles expiry automatically."
+)
+
+
+# ============================================================
+# FETCH OPTION CHAIN
+# ============================================================
+
+chain_response = fetch_chain(
+    client_id,
+    access_token,
+    underlying,
+    int(strikecount),
+    expiry_date
+)
+
+if chain_response is None:
+    st.stop()
+
+
+# ============================================================
+# BUILD OPTION MAP
+# ============================================================
+
+option_map = build_option_map(chain_response)
+
+if not option_map:
+    st.error("No option symbols found in option chain.")
+    st.stop()
+
+
+# ============================================================
+# SELECT ATM-1 / ATM / ATM+1
+# ============================================================
+
+selected_strikes, atm_strike = select_three_strikes(
+    option_map,
+    spot
+)
+
+if selected_strikes is None:
+
+    st.error(
+        "Could not find valid ATM-1 / ATM / ATM+1 strikes "
+        "with both CE and PE."
     )
 
-    st.title(
-        "Relative CE / PE ATP Signal"
+    st.stop()
+
+
+# ============================================================
+# COLLECT SIX OPTION SYMBOLS
+# ============================================================
+
+symbols = []
+
+for strike in selected_strikes:
+
+    symbols.append(
+        option_map[strike]["CE"]
     )
 
-    st.caption(
-        "(PE LTP − PE ATP) − (CE LTP − CE ATP)"
+    symbols.append(
+        option_map[strike]["PE"]
     )
 
-    # ==========================================================
-    # Sidebar
-    # ==========================================================
 
-    with st.sidebar:
+# ============================================================
+# FETCH QUOTES
+# ============================================================
 
-        client_id = st.text_input(
-            "Client ID",
-            placeholder="XXXXXXX-100"
-        )
+quotes = fetch_option_quotes(
+    client_id,
+    access_token,
+    tuple(symbols)
+)
 
-        access_token = st.text_input(
-            "Access token",
-            type="password"
-        )
+if not quotes:
 
-        symbol = st.text_input(
-            "Underlying",
-            "NSE:NIFTY50-INDEX"
-        )
+    st.error("No option quotes received.")
+    st.stop()
 
-        strikecount = st.number_input(
-            "Strikes fetched each side of ATM",
-            min_value=3,
-            max_value=50,
-            value=6
-        )
 
-        st.divider()
+# ============================================================
+# CALCULATE
+# ============================================================
 
-        st.subheader(
-            "Auto-refresh"
-        )
+df, avg_ce_dev, avg_pe_dev = calculate_deviations(
+    selected_strikes,
+    option_map,
+    quotes
+)
 
-        refresh_enabled = st.checkbox(
-            "Enable auto-refresh",
-            value=True
-        )
+if df is None:
 
-        refresh_mode = st.radio(
-            "Refresh mode",
-            [
-                "Align to minute boundary",
-                "Fixed interval"
-            ],
-            index=0
-        )
-
-        fixed_seconds = 60
-
-        if refresh_mode == "Fixed interval":
-
-            fixed_seconds = st.number_input(
-                "Refresh every (seconds)",
-                min_value=5,
-                max_value=3600,
-                value=60,
-                step=5
-            )
-
-        if not HAS_AUTOREFRESH:
-
-            st.warning(
-                "Install streamlit-autorefresh:\n\n"
-                "`pip install streamlit-autorefresh`"
-            )
-
-    # ==========================================================
-    # Credentials
-    # ==========================================================
-
-    if not (
-        client_id
-        and access_token
-    ):
-
-        st.info(
-            "Enter your Fyers Client ID and "
-            "Access Token in the sidebar."
-        )
-
-        return
-
-    # ==========================================================
-    # Auto refresh
-    # ==========================================================
-
-    interval_ms = install_autorefresh(
-        refresh_enabled,
-        refresh_mode,
-        fixed_seconds
+    st.error(
+        "Could not calculate CE/PE deviations."
     )
 
-    # ==========================================================
-    # Fetch chain
-    # ==========================================================
+    st.stop()
 
-    fetch_error = None
-    resp = None
 
-    try:
+# ============================================================
+# TOP METRICS
+# ============================================================
 
-        resp = fetch_chain(
-            client_id,
-            access_token,
-            symbol,
-            strikecount
-        )
+col1, col2, col3, col4 = st.columns(4)
 
-        if resp.get("s") != "ok":
-
-            fetch_error = (
-                f"API error: {resp}"
-            )
-
-            resp = None
-
-        else:
-
-            expiry_data = (
-                resp["data"]
-                .get("expiryData", [])
-            )
-
-            if expiry_data:
-
-                labels = {
-                    e["date"]: e["expiry"]
-                    for e in expiry_data
-                }
-
-                chosen = st.selectbox(
-                    "Expiry",
-                    list(labels)
-                )
-
-                if (
-                    chosen
-                    != expiry_data[0]["date"]
-                ):
-
-                    resp = fetch_chain(
-                        client_id,
-                        access_token,
-                        symbol,
-                        strikecount,
-                        labels[chosen]
-                    )
-
-                    if resp.get("s") != "ok":
-
-                        fetch_error = (
-                            f"API error: {resp}"
-                        )
-
-                        resp = None
-
-        if resp is None:
-
-            raise RuntimeError(
-                fetch_error
-                or
-                "Option-chain request failed."
-            )
-
-        chain = (
-            resp["data"]["optionsChain"]
-        )
-
-        # ------------------------------------------------------
-        # Spot
-        # ------------------------------------------------------
-
-        spot = fetch_spot(
-            client_id,
-            access_token,
-            symbol
-        )
-
-        # ------------------------------------------------------
-        # Option symbols
-        # ------------------------------------------------------
-
-        option_map = build_option_map(
-            chain
-        )
-
-        # ------------------------------------------------------
-        # ATM-1 / ATM / ATM+1
-        # ------------------------------------------------------
-
-        lower, atm, upper = (
-            select_three_strikes(
-                option_map,
-                spot
-            )
-        )
-
-        selected_strikes = [
-            lower,
-            atm,
-            upper
-        ]
-
-        # ------------------------------------------------------
-        # Six option symbols
-        # ------------------------------------------------------
-
-        quote_symbols = []
-
-        for strike in selected_strikes:
-
-            quote_symbols.append(
-                option_map[strike]["CE"]
-            )
-
-            quote_symbols.append(
-                option_map[strike]["PE"]
-            )
-
-        quote_symbols = list(
-            dict.fromkeys(
-                quote_symbols
-            )
-        )
-
-        # ------------------------------------------------------
-        # Quotes API
-        # ------------------------------------------------------
-
-        quotes = fetch_option_quotes(
-            client_id,
-            access_token,
-            tuple(quote_symbols)
-        )
-
-        # ------------------------------------------------------
-        # Calculate
-        # ------------------------------------------------------
-
-        (
-            calculation_df,
-            average_level,
-            average_relative_deviation
-        ) = calculate_levels(
-            selected_strikes,
-            option_map,
-            quotes
-        )
-
-        # ------------------------------------------------------
-        # Final signal
-        # ------------------------------------------------------
-
-        signal = (
-            average_level
-            - spot
-        )
-
-        st.session_state[
-            "last_refresh"
-        ] = datetime.now()
-
-    except Exception as e:
-
-        fetch_error = (
-            f"Failed: {e}"
-        )
-
-    # ==========================================================
-    # Header
-    # ==========================================================
-
-    last_refresh = (
-        st.session_state.get(
-            "last_refresh"
-        )
-    )
-
-    hdr = st.columns(
-        [3, 2, 2]
-    )
-
-    if last_refresh is not None:
-
-        hdr[0].caption(
-            "🕒 Last refreshed: "
-            f"**{last_refresh.strftime('%H:%M:%S')}**"
-        )
-
-    else:
-
-        hdr[0].caption(
-            "🕒 Last refreshed: —"
-        )
-
-    if fetch_error:
-
-        st.error(
-            fetch_error
-        )
-
-        return
-
-    hdr[1].caption(
-        "Auto-refresh: "
-        f"**{'ON' if refresh_enabled and HAS_AUTOREFRESH else 'OFF'}**"
-        + (
-            f" · every {interval_ms / 1000:.0f}s"
-            if interval_ms
-            else ""
-        )
-    )
-
-    if (
-        refresh_enabled
-        and refresh_mode
-        == "Align to minute boundary"
-    ):
-
-        hdr[2].caption(
-            "Next tick: next minute boundary"
-        )
-
-    if st.button(
-        "🔄 Refresh now"
-    ):
-
-        st.cache_data.clear()
-
-        st.rerun()
-
-    # ==========================================================
-    # Main metrics
-    # ==========================================================
-
-    m = st.columns(5)
-
-    m[0].metric(
-        "Spot",
+with col1:
+    st.metric(
+        "NIFTY Spot",
         f"{spot:,.2f}"
     )
 
-    m[1].metric(
-        "ATM",
-        f"{atm:,.0f}"
+with col2:
+    st.metric(
+        "ATM Strike",
+        f"{atm_strike:,.0f}"
     )
 
-    m[2].metric(
-        "Average Relative Dev.",
-        f"{average_relative_deviation:+,.2f}"
+with col3:
+    st.metric(
+        "Avg CE Dev",
+        f"{avg_ce_dev:+.2f}"
     )
 
-    m[3].metric(
-        "Average Level",
-        f"{average_level:,.2f}"
+with col4:
+    st.metric(
+        "Avg PE Dev",
+        f"{avg_pe_dev:+.2f}"
     )
 
-    m[4].metric(
-        "Signal vs Spot",
-        f"{signal:+,.2f}"
+
+# ============================================================
+# MAIN TABLE
+# ============================================================
+
+st.subheader("CE / PE ATP Deviation")
+
+display_df = df.copy()
+
+display_df["Strike"] = display_df["Strike"].map(
+    lambda x: f"{x:,.0f}"
+)
+
+for col in [
+    "CE LTP",
+    "CE ATP",
+    "CE Dev",
+    "PE LTP",
+    "PE ATP",
+    "PE Dev"
+]:
+
+    display_df[col] = display_df[col].map(
+        lambda x: f"{x:.2f}"
     )
 
-    # ==========================================================
-    # Signal interpretation
-    # ==========================================================
+st.dataframe(
+    display_df,
+    use_container_width=True,
+    hide_index=True
+)
 
-    if signal > 0:
 
-        st.success(
-            f"Average calculated level is "
-            f"**{signal:+,.2f} points above spot**."
-        )
+# ============================================================
+# EXPLICIT CALCULATION
+# ============================================================
 
-    elif signal < 0:
+st.subheader("Calculation")
 
-        st.warning(
-            f"Average calculated level is "
-            f"**{signal:+,.2f} points below spot**."
-        )
+for _, row in df.iterrows():
 
-    else:
+    strike = row["Strike"]
 
-        st.info(
-            "Average calculated level equals spot."
-        )
+    ce_ltp = row["CE LTP"]
+    ce_atp = row["CE ATP"]
+    ce_dev = row["CE Dev"]
 
-    # ==========================================================
-    # Main calculation table
-    # ==========================================================
-
-    st.subheader(
-        "ATM-1 / ATM / ATM+1"
-    )
-
-    display_df = calculation_df[
-        [
-            "Strike",
-
-            "CE ATP",
-            "CE LTP",
-            "CE LTP-ATP",
-
-            "PE LTP",
-            "PE ATP",
-            "PE LTP-ATP",
-
-            "PE Dev - CE Dev",
-
-            "Calculated Level",
-        ]
-    ].copy()
-
-    st.dataframe(
-        display_df.style.format(
-            {
-                "Strike": "{:,.0f}",
-
-                "CE ATP": "{:,.2f}",
-                "CE LTP": "{:,.2f}",
-                "CE LTP-ATP": "{:+,.2f}",
-
-                "PE LTP": "{:,.2f}",
-                "PE ATP": "{:,.2f}",
-                "PE LTP-ATP": "{:+,.2f}",
-
-                "PE Dev - CE Dev": "{:+,.2f}",
-
-                "Calculated Level": "{:,.2f}",
-            },
-            na_rep="–"
-        ),
-        hide_index=True,
-        use_container_width=True
-    )
-
-    # ==========================================================
-    # Explicit calculation
-    # ==========================================================
-
-    st.subheader(
-        "Calculation"
-    )
-
-    for _, row in calculation_df.iterrows():
-
-        strike = row["Strike"]
-
-        ce_atp = row["CE ATP"]
-        ce_ltp = row["CE LTP"]
-
-        pe_ltp = row["PE LTP"]
-        pe_atp = row["PE ATP"]
-
-        ce_dev = row["CE LTP-ATP"]
-        pe_dev = row["PE LTP-ATP"]
-
-        relative_dev = row[
-            "PE Dev - CE Dev"
-        ]
-
-        level = row[
-            "Calculated Level"
-        ]
-
-        st.write(
-            f"**{strike:,.0f}:**  "
-            f"CE: {ce_ltp:,.2f} − {ce_atp:,.2f} "
-            f"= **{ce_dev:+,.2f}**  |  "
-            f"PE: {pe_ltp:,.2f} − {pe_atp:,.2f} "
-            f"= **{pe_dev:+,.2f}**  |  "
-            f"PE Dev − CE Dev = **{relative_dev:+,.2f}**  |  "
-            f"Level = **{level:,.2f}**"
-        )
-
-    st.divider()
-
-    # ==========================================================
-    # Final calculation
-    # ==========================================================
-
-    levels_text = " + ".join(
-        f"{x:,.2f}"
-        for x in calculation_df[
-            "Calculated Level"
-        ]
-    )
+    pe_ltp = row["PE LTP"]
+    pe_atp = row["PE ATP"]
+    pe_dev = row["PE Dev"]
 
     st.write(
-        f"**Average Level:** "
-        f"({levels_text}) / 3 "
-        f"= **{average_level:,.2f}**"
+        f"**{strike:,.0f}:** "
+        f"CE: {ce_ltp:.2f} − {ce_atp:.2f} = "
+        f"**{ce_dev:+.2f}** | "
+        f"PE: {pe_ltp:.2f} − {pe_atp:.2f} = "
+        f"**{pe_dev:+.2f}**"
     )
 
-    st.write(
-        f"**Signal:** "
-        f"{average_level:,.2f} − "
-        f"{spot:,.2f} "
-        f"= **{signal:+,.2f}**"
-    )
 
-    # ==========================================================
-    # Raw Quotes API
-    # ==========================================================
+# ============================================================
+# AVERAGE CALCULATION
+# ============================================================
 
-    with st.expander(
-        "Quotes API details",
-        expanded=False
-    ):
+st.subheader("Average Across ATM-1 / ATM / ATM+1")
 
-        quote_rows = []
+ce_values = df["CE Dev"].tolist()
+pe_values = df["PE Dev"].tolist()
 
-        for strike in selected_strikes:
+ce_formula = " + ".join(
+    f"({x:.2f})" for x in ce_values
+)
 
-            ce_symbol = option_map[
-                strike
-            ]["CE"]
+pe_formula = " + ".join(
+    f"({x:.2f})" for x in pe_values
+)
 
-            pe_symbol = option_map[
-                strike
-            ]["PE"]
+st.write(
+    f"**Average CE Dev:** "
+    f"({ce_formula}) / {len(ce_values)} "
+    f"= **{avg_ce_dev:+.2f}**"
+)
 
-            ce = quotes.get(
-                ce_symbol,
-                {}
-            )
+st.write(
+    f"**Average PE Dev:** "
+    f"({pe_formula}) / {len(pe_values)} "
+    f"= **{avg_pe_dev:+.2f}**"
+)
 
-            pe = quotes.get(
-                pe_symbol,
-                {}
-            )
-
-            quote_rows.append({
-
-                "Strike": strike,
-
-                "CE Symbol": ce_symbol,
-                "CE LP": ce.get("lp"),
-                "CE ATP": ce.get("atp"),
-
-                "PE Symbol": pe_symbol,
-                "PE LP": pe.get("lp"),
-                "PE ATP": pe.get("atp"),
-            })
-
-        quote_df = pd.DataFrame(
-            quote_rows
-        )
-
-        st.dataframe(
-            quote_df.style.format(
-                {
-                    "Strike": "{:,.0f}",
-
-                    "CE LP": "{:,.2f}",
-                    "CE ATP": "{:,.2f}",
-
-                    "PE LP": "{:,.2f}",
-                    "PE ATP": "{:,.2f}",
-                },
-                na_rep="–"
-            ),
-            hide_index=True,
-            use_container_width=True
-        )
-
-    # ==========================================================
-    # Formula explanation
-    # ==========================================================
-
-    with st.expander(
-        "Formula and interpretation",
-        expanded=False
-    ):
-
-        st.latex(
-            r"""
-            CE_{dev}=CE_{LTP}-CE_{ATP}
-            """
-        )
-
-        st.latex(
-            r"""
-            PE_{dev}=PE_{LTP}-PE_{ATP}
-            """
-        )
-
-        st.latex(
-            r"""
-            D_K=PE_{dev}-CE_{dev}
-            """
-        )
-
-        st.latex(
-            r"""
-            L_K=K+D_K
-            """
-        )
-
-        st.latex(
-            r"""
-            L_{avg}
-            =
-            \frac{
-            L_{ATM-1}
-            +
-            L_{ATM}
-            +
-            L_{ATM+1}
-            }{3}
-            """
-        )
-
-        st.latex(
-            r"""
-            Signal=L_{avg}-Spot
-            """
-        )
-
-        st.markdown(
-            """
-### Why use the relative deviation?
-
-The important point is that an option being above or below
-its ATP **by itself does not tell us the direction**.
-
-For example:
-
-**Case 1 — both above ATP**
-
-CE = +10 above ATP
-
-PE = +5 above ATP
-
-Therefore:
-
-`PE deviation - CE deviation = 5 - 10 = -5`
-
-The CE is relatively stronger versus its ATP.
-
----
-
-**Case 2 — both below ATP**
-
-CE = -8 below ATP
-
-PE = -3 below ATP
-
-Therefore:
-
-`PE deviation - CE deviation = -3 - (-8) = +5`
-
-Again, we are comparing the two sides relative to their
-own average traded prices.
-
----
-
-**Case 3 — CE above, PE below**
-
-CE = +10
-
-PE = -5
-
-Therefore:
-
-`-5 - (+10) = -15`
-
----
-
-**Case 4 — CE below, PE above**
-
-CE = -5
-
-PE = +10
-
-Therefore:
-
-`+10 - (-5) = +15`
-
-So the metric does NOT require one option to be above ATP
-and the other to be below ATP.
-
-It measures the **relative displacement** between CE and PE.
-"""
-        )
-
-        st.warning(
-            """
-Do not assume yet that positive signal = bullish or
-negative signal = bearish.
-
-First test the historical relationship between:
-
-    Signal(t)
-
-and:
-
-    Spot(t+n) - Spot(t)
-
-for your chosen forward horizon.
-
-The code is calculating the metric correctly; the direction
-of its predictive relationship needs to come from the data.
-"""
-        )
-
-
-# ==============================================================
-# Run
-# ==============================================================
-
-if __name__ == "__main__":
-    main()
