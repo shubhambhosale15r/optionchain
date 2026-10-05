@@ -983,6 +983,22 @@ else:
                 lower_breakeven=lower_breakeven
             )
 
+st.markdown(
+    """
+    <style>
+    /* Change the font size of the metric number/value */
+    [data-testid="stMetricValue"] {
+        font-size: 30px !important;
+    }
+    
+    /* Change the font size of the metric top label */
+    [data-testid="stMetricLabel"] p {
+        font-size: 14px !important;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
 m = st.columns(7)
 
 m[0].metric(
@@ -1000,15 +1016,15 @@ m[2].metric(
     f"{atm_straddle:,.2f}"
 )
 
-m[3].metric(
-    "Upper BE",
-    f"{upper_breakeven:,.2f}"
-)
+# m[3].metric(
+#     "Upper BE",
+#     f"{upper_breakeven:,.2f}"
+# )
 
-m[4].metric(
-    "Lower BE",
-    f"{lower_breakeven:,.2f}"
-)
+# m[4].metric(
+#     "Lower BE",
+#     f"{lower_breakeven:,.2f}"
+# )
 
 m[5].metric(
     "Avg CE Dev.",
