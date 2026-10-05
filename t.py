@@ -301,6 +301,8 @@ def get_ist_time():
     )
 
 def format_ist_time(dt):
+    if isinstance(dt, str):
+        return dt
     return dt.strftime(
         "%d-%b-%Y %I:%M:%S %p IST"
     )
@@ -342,6 +344,50 @@ def initialize_paper_state():
     if "manual_close_requested" not in st.session_state:
         st.session_state.manual_close_requested = False
 
+    if st.session_state.paper_trade is not None:
+        trade = st.session_state.paper_trade
+
+        quantity = int(
+            trade.get("quantity", 65)
+        )
+
+        lot_size = int(
+            trade.get("lot_size", 65)
+        )
+
+        lots = int(
+            trade.get(
+                "lots",
+                max(
+                    1,
+                    round(quantity / lot_size)
+                )
+            )
+        )
+
+        trade["quantity"] = quantity
+        trade["lot_size"] = lot_size
+        trade["lots"] = lots
+
+        if "signal" not in trade:
+            trade["signal"] = ""
+
+        if "action" not in trade:
+            option_type = trade.get("option_type", "")
+            trade["action"] = f"SELL {option_type}"
+
+        if "entry_price" not in trade:
+            trade["entry_price"] = 0.0
+
+        if "entry_spot" not in trade:
+            trade["entry_spot"] = 0.0
+
+        if "entry_avg_ce_dev" not in trade:
+            trade["entry_avg_ce_dev"] = 0.0
+
+        if "entry_avg_pe_dev" not in trade:
+            trade["entry_avg_pe_dev"] = 0.0
+
 def check_buy_signal(avg_ce_dev, avg_pe_dev):
     return (
         avg_ce_dev > 0
@@ -360,10 +406,12 @@ def check_exit_signal(trade, avg_ce_dev, avg_pe_dev):
     if trade is None:
         return False
 
-    if trade["option_type"] == "PE":
+    option_type = trade.get("option_type")
+
+    if option_type == "PE":
         return abs(avg_ce_dev) >= abs(avg_pe_dev)
 
-    if trade["option_type"] == "CE":
+    if option_type == "CE":
         return abs(avg_pe_dev) >= abs(avg_ce_dev)
 
     return False
@@ -382,16 +430,18 @@ def enter_paper_trade(
     upper_breakeven,
     lower_breakeven
 ):
-    quantity = int(lots * lot_size)
+    lots = int(lots)
+    lot_size = int(lot_size)
+    quantity = lots * lot_size
 
     st.session_state.paper_trade = {
         "signal": signal,
         "action": f"SELL {option_type}",
         "option_type": option_type,
-        "strike": strike,
+        "strike": float(strike),
         "symbol": symbol,
-        "lots": int(lots),
-        "lot_size": int(lot_size),
+        "lots": lots,
+        "lot_size": lot_size,
         "quantity": quantity,
         "entry_price": float(entry_price),
         "entry_time": get_ist_time(),
@@ -415,38 +465,70 @@ def exit_paper_trade(
 
     exit_time = get_ist_time()
 
-    entry_price = trade["entry_price"]
-    quantity = trade["quantity"]
+    entry_price = float(
+        trade.get("entry_price", 0)
+    )
+
+    quantity = int(
+        trade.get("quantity", 65)
+    )
+
+    lot_size = int(
+        trade.get("lot_size", 65)
+    )
+
+    lots = int(
+        trade.get(
+            "lots",
+            max(
+                1,
+                round(quantity / lot_size)
+            )
+        )
+    )
+
+    current_price = float(current_price)
 
     pnl = (
-        entry_price - float(current_price)
+        entry_price - current_price
     ) * quantity
 
     trade_record = {
-        "Signal": trade["signal"],
-        "Action": trade["action"],
-        "Option": trade["option_type"],
-        "Strike": trade["strike"],
-        "Lots": trade["lots"],
+        "Signal": trade.get("signal", ""),
+        "Action": trade.get("action", ""),
+        "Option": trade.get("option_type", ""),
+        "Strike": trade.get("strike", ""),
+        "Lots": lots,
         "Qty": quantity,
         "Entry Time": format_ist_time(
-            trade["entry_time"]
+            trade.get("entry_time", exit_time)
         ),
         "Entry Price": entry_price,
         "Exit Time": format_ist_time(
             exit_time
         ),
-        "Exit Price": float(current_price),
+        "Exit Price": current_price,
         "P&L": float(pnl),
-        "Entry Spot": trade["entry_spot"],
+        "Entry Spot": float(
+            trade.get("entry_spot", 0)
+        ),
         "Exit Spot": float(spot),
-        "Entry Avg CE Dev": trade["entry_avg_ce_dev"],
-        "Entry Avg PE Dev": trade["entry_avg_pe_dev"],
+        "Entry Avg CE Dev": float(
+            trade.get("entry_avg_ce_dev", 0)
+        ),
+        "Entry Avg PE Dev": float(
+            trade.get("entry_avg_pe_dev", 0)
+        ),
         "Exit Avg CE Dev": float(avg_ce_dev),
         "Exit Avg PE Dev": float(avg_pe_dev),
-        "Entry Upper BE": trade["entry_upper_breakeven"],
-        "Entry Lower BE": trade["entry_lower_breakeven"],
-        "Symbol": trade["symbol"]
+        "Entry Upper BE": trade.get(
+            "entry_upper_breakeven"
+        ),
+        "Entry Lower BE": trade.get(
+            "entry_lower_breakeven"
+        ),
+        "Symbol": trade.get("symbol", ""),
+        "Lot Size": lot_size
     }
 
     st.session_state.trade_log.append(
@@ -606,9 +688,7 @@ expiry_index = st.sidebar.selectbox(
     format_func=lambda i: expiry_labels[i]
 )
 
-selected_expiry = expiry_values[
-    expiry_index
-]
+selected_expiry = expiry_values[expiry_index]
 
 try:
     chain_response = fetch_chain(
@@ -744,11 +824,14 @@ trade_symbols.append(
 )
 
 if st.session_state.paper_trade is not None:
-    open_trade_symbol = (
-        st.session_state.paper_trade["symbol"]
+    open_trade_symbol = st.session_state.paper_trade.get(
+        "symbol"
     )
 
-    if open_trade_symbol not in trade_symbols:
+    if (
+        open_trade_symbol
+        and open_trade_symbol not in trade_symbols
+    ):
         trade_symbols.append(
             open_trade_symbol
         )
@@ -799,7 +882,9 @@ exit_signal = check_exit_signal(
 if st.session_state.paper_trade is not None:
     open_trade = st.session_state.paper_trade
 
-    current_symbol = open_trade["symbol"]
+    current_symbol = open_trade.get(
+        "symbol"
+    )
 
     current_quote = quotes.get(
         current_symbol
@@ -812,7 +897,7 @@ if st.session_state.paper_trade is not None:
         )
     ):
         current_price = float(
-            current_quote["lp"]
+            current_quote.get("lp")
         )
 
         if st.session_state.manual_close_requested:
@@ -855,12 +940,12 @@ else:
                 strike=lower_strike,
                 symbol=trade_symbol,
                 entry_price=float(
-                    trade_quote["lp"]
+                    trade_quote.get("lp")
                 ),
                 avg_ce_dev=average_ce_deviation,
                 avg_pe_dev=average_pe_deviation,
                 spot=spot,
-                lots=lots,
+                lots=int(lots),
                 lot_size=lot_size,
                 upper_breakeven=upper_breakeven,
                 lower_breakeven=lower_breakeven
@@ -887,12 +972,12 @@ else:
                 strike=upper_strike,
                 symbol=trade_symbol,
                 entry_price=float(
-                    trade_quote["lp"]
+                    trade_quote.get("lp")
                 ),
                 avg_ce_dev=average_ce_deviation,
                 avg_pe_dev=average_pe_deviation,
                 spot=spot,
-                lots=lots,
+                lots=int(lots),
                 lot_size=lot_size,
                 upper_breakeven=upper_breakeven,
                 lower_breakeven=lower_breakeven
@@ -988,18 +1073,21 @@ st.subheader(
 if st.session_state.paper_trade is None:
     exit_condition_text = "No open position"
 else:
-    open_option = st.session_state.paper_trade[
-        "option_type"
-    ]
+    open_option = st.session_state.paper_trade.get(
+        "option_type",
+        ""
+    )
 
     if open_option == "PE":
         exit_condition_text = (
             "abs(Avg CE Dev) >= abs(Avg PE Dev)"
         )
-    else:
+    elif open_option == "CE":
         exit_condition_text = (
             "abs(Avg PE Dev) >= abs(Avg CE Dev)"
         )
+    else:
+        exit_condition_text = "Invalid open position"
 
 signal_df = pd.DataFrame([
     {
@@ -1083,7 +1171,7 @@ else:
     trade = st.session_state.paper_trade
 
     current_quote = quotes.get(
-        trade["symbol"]
+        trade.get("symbol")
     )
 
     current_price = None
@@ -1096,30 +1184,69 @@ else:
         )
     ):
         current_price = float(
-            current_quote["lp"]
+            current_quote.get("lp")
         )
 
         unrealized_pnl = (
-            trade["entry_price"]
-            - current_price
-        ) * trade["quantity"]
+            float(
+                trade.get(
+                    "entry_price",
+                    0
+                )
+            ) - current_price
+        ) * int(
+            trade.get(
+                "quantity",
+                65
+            )
+        )
 
     open_trade_df = pd.DataFrame([
         {
-            "Signal": trade["signal"],
-            "Action": trade["action"],
-            "Option": trade["option_type"],
-            "Strike": trade["strike"],
-            "Lots": trade["lots"],
-            "Qty": trade["quantity"],
-            "Entry Price": trade["entry_price"],
+            "Signal": trade.get(
+                "signal",
+                ""
+            ),
+            "Action": trade.get(
+                "action",
+                ""
+            ),
+            "Option": trade.get(
+                "option_type",
+                ""
+            ),
+            "Strike": trade.get(
+                "strike",
+                ""
+            ),
+            "Lots": trade.get(
+                "lots",
+                1
+            ),
+            "Qty": trade.get(
+                "quantity",
+                65
+            ),
+            "Entry Price": trade.get(
+                "entry_price",
+                0
+            ),
             "Current Price": current_price,
             "Unrealized P&L": unrealized_pnl,
             "Entry Time": format_ist_time(
-                trade["entry_time"]
+                trade.get(
+                    "entry_time",
+                    get_ist_time()
+                )
             ),
-            "Entry Spot": trade["entry_spot"],
-            "Symbol": trade["symbol"]
+            "Entry Spot": trade.get(
+                "entry_spot",
+                0
+            ),
+            "Symbol": trade.get(
+                "symbol",
+                ""
+            )
         }
     ])
 
